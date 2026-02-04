@@ -46,6 +46,7 @@ async def health():
     return {"status": "healthy", "timestamp": int(time.time() * 1000)}
 
 @app.post("/analyze")
+@app.post("/api/analyze")
 async def analyze_message(
     request: Request,
     x_api_key: str = Header(None, alias="x-api-key")

@@ -16,7 +16,7 @@ FREE_MODELS = [
 ]
 
 # API Authentication Key (for securing your endpoint)
-MY_API_KEY = os.getenv("MY_API_KEY", "SENTINAL-HONEYPOT-2026")
+MY_API_KEY = os.getenv("MY_API_KEY", "sentinal-hackathon-2026")
 
 # GUVI Callback URL
 GUVI_CALLBACK_URL = "https://hackathon.guvi.in/api/updateHoneyPotFinalResult"
