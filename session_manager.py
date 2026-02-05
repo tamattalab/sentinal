@@ -128,38 +128,25 @@ class SessionManager:
     
     def should_trigger_early_callback(self, session_id: str) -> bool:
         """
-        Smart trigger for early callback based on optimization plan.
-        Triggers if:
-        1. Useful intelligence gathered (count >= 2)
-        2. Confidence high (scam_detected) - (already true if we call this)
-        3. Max turns reached (>= 8)
-        4. Stalled (handled by background loop, but we check logic here too)
+        Send callback on EVERY request when we have meaningful intelligence.
+        This ensures GUVI always gets the LATEST accumulated data.
         """
         session = self.get_session(session_id)
-        if not session or session.callback_sent:
+        if not session:
             return False
             
         if not session.scam_detected:
             return False
 
-        # 1. Intelligence Threshold
-        # Count unique items across all categories
-        intel = session.intelligence
-        unique_items = (
-            len(set(intel.bankAccounts)) + 
-            len(set(intel.upiIds)) + 
-            len(set(intel.phishingLinks)) + 
-            len(set(intel.phoneNumbers))
+        # Send callback if we have meaningful intelligence extracted
+        # No callback_sent check - send on EVERY request with updated data
+        has_meaningful_intelligence = (
+            len(set(session.intelligence.bankAccounts)) > 0 or
+            len(set(session.intelligence.upiIds)) > 0 or
+            len(set(session.intelligence.phoneNumbers)) > 0
         )
         
-        if unique_items >= 2:
-            return True
-            
-        # 2. Max Turns
-        if session.message_count >= 8:
-            return True
-            
-        return False
+        return has_meaningful_intelligence
     
     def clear_session(self, session_id: str):
         """Remove a session."""
