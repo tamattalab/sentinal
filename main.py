@@ -165,9 +165,12 @@ async def analyze_message(
         # Extract intelligence from ALL messages combined
         current_intel = extract_all_intelligence(combined_text)
         
-        logger.info(f"Extracted intel: accounts={current_intel.bankAccounts}, upi={current_intel.upiIds}, phones={current_intel.phoneNumbers}")
+        logger.info(f"Extracted intel from current request: accounts={current_intel.bankAccounts}, upi={current_intel.upiIds}, phones={current_intel.phoneNumbers}")
         
-        # Update session with new message count
+        # Log session state BEFORE update
+        logger.info(f"Session BEFORE update: scam={session.scam_detected}, msg_count={session.message_count}, accounts={session.intelligence.bankAccounts}, upi={session.intelligence.upiIds}")
+        
+        # Update session with new data - intelligence will be MERGED (accumulated)
         session = session_manager.update_session(
             session_id=session_id,
             scam_detected=scam_detected or session.scam_detected,  # Once detected, stays detected
@@ -175,8 +178,13 @@ async def analyze_message(
             scam_type=scam_type or session.scam_type,
             increment_messages=False  # Don't increment, we'll set it directly
         )
-        # Set actual message count from conversation history
-        session.message_count = actual_message_count
+        
+        # Set message count to MAX of current count and request count (never decrease)
+        # This handles cases where GUVI sends partial history
+        session.message_count = max(session.message_count, actual_message_count)
+        
+        # Log session state AFTER update
+        logger.info(f"Session AFTER update: scam={session.scam_detected}, msg_count={session.message_count}, accounts={session.intelligence.bankAccounts}, upi={session.intelligence.upiIds}")
         
         # Add agent notes based on detection
         if scam_detected and not session.scam_detected:
