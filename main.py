@@ -112,33 +112,40 @@ async def analyze_message(
         # Get or create session
         session = session_manager.get_or_create_session(session_id)
         
+        # Calculate actual message count from conversation history + current message
+        # GUVI sends full conversation history with each request
+        actual_message_count = len(conversation_history) + 1  # +1 for current message
+        
         # Detect scam in current message and history
         scam_detected, keywords = detect_scam(message_text, conversation_history)
         scam_type = get_scam_type(keywords) if scam_detected else None
         
-        # Extract intelligence from current message
-        current_intel = extract_all_intelligence(message_text)
+        # Build full conversation text for comprehensive extraction
+        all_texts = [message_text]  # Start with current message
+        for msg in conversation_history:
+            msg_text = msg.get("text", "") if isinstance(msg, dict) else str(msg)
+            if msg_text:
+                all_texts.append(msg_text)
         
-        # Also extract from conversation history
-        if conversation_history:
-            history_intel = extract_from_conversation(conversation_history)
-            # Merge
-            current_intel = ExtractedIntelligence(
-                bankAccounts=list(set(current_intel.bankAccounts + history_intel.bankAccounts)),
-                upiIds=list(set(current_intel.upiIds + history_intel.upiIds)),
-                phishingLinks=list(set(current_intel.phishingLinks + history_intel.phishingLinks)),
-                phoneNumbers=list(set(current_intel.phoneNumbers + history_intel.phoneNumbers)),
-                suspiciousKeywords=list(set(current_intel.suspiciousKeywords + history_intel.suspiciousKeywords))
-            )
+        # Combine all texts for extraction
+        combined_text = "\n".join(all_texts)
+        logger.info(f"Extracting intel from combined text ({len(all_texts)} messages)")
         
-        # Update session
+        # Extract intelligence from ALL messages combined
+        current_intel = extract_all_intelligence(combined_text)
+        
+        logger.info(f"Extracted intel: accounts={current_intel.bankAccounts}, upi={current_intel.upiIds}, phones={current_intel.phoneNumbers}")
+        
+        # Update session with new message count
         session = session_manager.update_session(
             session_id=session_id,
             scam_detected=scam_detected or session.scam_detected,  # Once detected, stays detected
             intelligence=current_intel,
             scam_type=scam_type or session.scam_type,
-            increment_messages=True
+            increment_messages=False  # Don't increment, we'll set it directly
         )
+        # Set actual message count from conversation history
+        session.message_count = actual_message_count
         
         # Add agent notes based on detection
         if scam_detected and not session.scam_detected:
