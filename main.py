@@ -172,6 +172,10 @@ async def analyze_message(
         # ── Session (single source of truth) ───────────────────────────
         session = session_manager.get_or_create(session_id)
 
+        # ── Update message count from conversation history ─────────────
+        history = request_body.conversationHistory or []
+        session.update_message_count_from_history(len(history))
+
         # ── Scam Detection ─────────────────────────────────────────────
         if session.scam_detected:
             scam_detected = True
@@ -180,13 +184,24 @@ async def analyze_message(
         else:
             conversation_history = [
                 {"sender": m.sender, "text": m.text, "timestamp": m.timestamp}
-                for m in (request_body.conversationHistory or [])
+                for m in history
             ]
             scam_detected, keywords = detect_scam(message_text, conversation_history)
             scam_type = get_scam_type(keywords) if scam_detected else None
 
-        # ── Intelligence Extraction (current message only) ─────────────
+        # ── Intelligence Extraction (current message + full history) ───
         current_intel = extract_all_intelligence(message_text)
+
+        # Also extract from ALL messages in conversation history
+        for msg in history:
+            history_intel = extract_all_intelligence(msg.text)
+            current_intel = ExtractedIntelligence(
+                phoneNumbers=list(set(current_intel.phoneNumbers + history_intel.phoneNumbers)),
+                bankAccounts=list(set(current_intel.bankAccounts + history_intel.bankAccounts)),
+                upiIds=list(set(current_intel.upiIds + history_intel.upiIds)),
+                phishingLinks=list(set(current_intel.phishingLinks + history_intel.phishingLinks)),
+                emailAddresses=list(set(current_intel.emailAddresses + history_intel.emailAddresses)),
+            )
 
         # ── Update session state ───────────────────────────────────────
         session.scam_detected = scam_detected or session.scam_detected

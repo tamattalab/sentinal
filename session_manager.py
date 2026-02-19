@@ -23,18 +23,30 @@ class SessionData:
         self.last_activity = datetime.now()
         self.start_time = time.time()
 
-        # Message tracking — each API call = 1 scammer msg + 1 reply = 2 messages
+        # Message tracking
         self._turn_count = 0
+        self._history_message_count = 0  # from conversationHistory
 
     @property
     def message_count(self) -> int:
-        """Total messages exchanged = turns × 2 (scammer + honeypot)."""
-        return self._turn_count * 2
+        """Total messages exchanged — max of turn-based and history-based counts."""
+        turn_based = self._turn_count * 2
+        return max(turn_based, self._history_message_count)
 
     def record_turn(self):
         """Record one conversation turn (scammer sends, honeypot replies)."""
         self._turn_count += 1
         self.last_activity = datetime.now()
+
+    def update_message_count_from_history(self, history_length: int):
+        """
+        Update message count using conversationHistory length from GUVI.
+        history_length = len(conversationHistory) already includes all prior messages.
+        +2 for current scammer message + our reply.
+        """
+        total = history_length + 2
+        if total > self._history_message_count:
+            self._history_message_count = total
 
     def get_engagement_metrics(self) -> dict:
         """
