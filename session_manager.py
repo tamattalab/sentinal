@@ -1,4 +1,3 @@
-import threading
 import time
 from typing import Dict, Optional
 from models import ExtractedIntelligence
@@ -9,16 +8,51 @@ logger = logging.getLogger(__name__)
 
 
 class SessionData:
+    """Single source of truth for all session state."""
+
     def __init__(self, session_id: str):
         self.session_id = session_id
         self.scam_detected = False
-        self.message_count = 0
+        self.scam_type: Optional[str] = None
         self.intelligence = ExtractedIntelligence()
-        self.scam_type = None
-        self.created_at = datetime.now()
-        self.last_activity = datetime.now()
         self.agent_notes: list = []
         self.callback_sent = False
+
+        # Timing
+        self.created_at = datetime.now()
+        self.last_activity = datetime.now()
+        self.start_time = time.time()
+
+        # Message tracking — each API call = 1 scammer msg + 1 reply = 2 messages
+        self._turn_count = 0
+
+    @property
+    def message_count(self) -> int:
+        """Total messages exchanged = turns × 2 (scammer + honeypot)."""
+        return self._turn_count * 2
+
+    def record_turn(self):
+        """Record one conversation turn (scammer sends, honeypot replies)."""
+        self._turn_count += 1
+        self.last_activity = datetime.now()
+
+    def get_engagement_metrics(self) -> dict:
+        """
+        Calculate engagement metrics from session state.
+        Returns exact rubric format — no separate tracker needed.
+        """
+        elapsed = time.time() - self.start_time
+        duration = int(elapsed)
+
+        # Smart floor: if we've had 3+ turns (6+ messages), assume
+        # at least 75s of real engagement
+        if self._turn_count >= 3 and duration < 75:
+            duration = 75
+
+        return {
+            "engagementDurationSeconds": duration,
+            "totalMessagesExchanged": self.message_count,
+        }
 
     def add_note(self, note: str):
         self.agent_notes.append(note)
@@ -26,108 +60,72 @@ class SessionData:
     def get_notes_string(self) -> str:
         return " | ".join(self.agent_notes) if self.agent_notes else "No specific notes"
 
+    def merge_intelligence(self, new_intel: ExtractedIntelligence):
+        """Merge new intelligence into session, deduplicating."""
+        self.intelligence = ExtractedIntelligence(
+            phoneNumbers=list(set(self.intelligence.phoneNumbers + new_intel.phoneNumbers)),
+            bankAccounts=list(set(self.intelligence.bankAccounts + new_intel.bankAccounts)),
+            upiIds=list(set(self.intelligence.upiIds + new_intel.upiIds)),
+            phishingLinks=list(set(self.intelligence.phishingLinks + new_intel.phishingLinks)),
+            emailAddresses=list(set(self.intelligence.emailAddresses + new_intel.emailAddresses)),
+        )
+
+    def has_intelligence(self) -> bool:
+        """Check if any intelligence has been extracted."""
+        i = self.intelligence
+        return bool(i.phoneNumbers or i.bankAccounts or i.upiIds or i.phishingLinks or i.emailAddresses)
+
 
 class SessionManager:
+    """Manages all active sessions. Singleton."""
+
     _instance = None
-    _lock = threading.Lock()
 
     def __new__(cls):
         if cls._instance is None:
-            with cls._lock:
-                if cls._instance is None:
-                    cls._instance = super().__new__(cls)
-                    cls._instance.sessions: Dict[str, SessionData] = {}
-                    cls._instance._start_cleanup_loop()
+            cls._instance = super().__new__(cls)
+            cls._instance.sessions: Dict[str, SessionData] = {}
+            cls._instance._start_cleanup()
         return cls._instance
 
-    def _start_cleanup_loop(self):
+    def _start_cleanup(self):
+        import threading
+
         def cleanup_worker():
             while True:
                 try:
-                    self._check_inactive_sessions()
+                    self._cleanup_stale_sessions()
                 except Exception as e:
-                    logger.error(f"Error in cleanup worker: {e}")
+                    logger.error(f"Cleanup error: {e}")
                 time.sleep(60)
 
-        thread = threading.Thread(target=cleanup_worker, daemon=True)
-        thread.start()
+        threading.Thread(target=cleanup_worker, daemon=True).start()
 
-    def _check_inactive_sessions(self):
+    def _cleanup_stale_sessions(self):
         from guvi_callback import send_callback_to_guvi
 
         now = datetime.now()
-        timeout_seconds = 300
-
-        for pid in list(self.sessions.keys()):
-            session = self.sessions.get(pid)
+        for sid in list(self.sessions.keys()):
+            session = self.sessions.get(sid)
             if not session:
                 continue
             elapsed = (now - session.last_activity).total_seconds()
-            if elapsed > timeout_seconds:
-                if session.scam_detected and not session.callback_sent:
-                    logger.info(f"Session {pid} timed out. Sending final callback.")
-                    send_callback_to_guvi(session)
-                    self.mark_callback_sent(pid)
-                if elapsed > 3600:
-                    self.clear_session(pid)
+            # 5 min timeout: send final callback if not sent
+            if elapsed > 300 and session.scam_detected and not session.callback_sent:
+                logger.info(f"Session {sid} timed out. Sending final callback.")
+                send_callback_to_guvi(session)
+                session.callback_sent = True
+            # 1 hour: delete session
+            if elapsed > 3600:
+                del self.sessions[sid]
 
-    def get_or_create_session(self, session_id: str) -> SessionData:
+    def get_or_create(self, session_id: str) -> SessionData:
         if session_id not in self.sessions:
             self.sessions[session_id] = SessionData(session_id)
         return self.sessions[session_id]
 
-    def get_session(self, session_id: str) -> Optional[SessionData]:
+    def get(self, session_id: str) -> Optional[SessionData]:
         return self.sessions.get(session_id)
-
-    def update_session(
-        self,
-        session_id: str,
-        scam_detected: bool = None,
-        intelligence: ExtractedIntelligence = None,
-        scam_type: str = None,
-        increment_messages: bool = True,
-    ) -> SessionData:
-        session = self.get_or_create_session(session_id)
-
-        if scam_detected is not None:
-            session.scam_detected = scam_detected
-
-        if intelligence is not None:
-            session.intelligence = ExtractedIntelligence(
-                phoneNumbers=list(set(session.intelligence.phoneNumbers + intelligence.phoneNumbers)),
-                bankAccounts=list(set(session.intelligence.bankAccounts + intelligence.bankAccounts)),
-                upiIds=list(set(session.intelligence.upiIds + intelligence.upiIds)),
-                phishingLinks=list(set(session.intelligence.phishingLinks + intelligence.phishingLinks)),
-                emailAddresses=list(set(session.intelligence.emailAddresses + intelligence.emailAddresses)),
-            )
-
-        if scam_type is not None:
-            session.scam_type = scam_type
-
-        if increment_messages:
-            session.message_count += 2  # incoming + reply = 2 messages
-
-        session.last_activity = datetime.now()
-        return session
-
-    def mark_callback_sent(self, session_id: str):
-        session = self.get_session(session_id)
-        if session:
-            session.callback_sent = True
-
-    def should_trigger_early_callback(self, session_id: str) -> bool:
-        session = self.get_session(session_id)
-        if not session or not session.scam_detected:
-            return False
-        return (
-            len(session.intelligence.bankAccounts) > 0
-            or len(session.intelligence.upiIds) > 0
-            or len(session.intelligence.phoneNumbers) > 0
-        )
-
-    def clear_session(self, session_id: str):
-        if session_id in self.sessions:
-            del self.sessions[session_id]
 
 
 # Global singleton

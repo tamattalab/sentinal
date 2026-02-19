@@ -5,13 +5,12 @@ import logging
 import time
 
 from config import MY_API_KEY
-from models import AnalyzeRequest, AnalyzeResponse, ExtractedIntelligence, EngagementMetrics
+from models import AnalyzeRequest, ExtractedIntelligence
 from scam_detector import detect_scam, get_scam_type
 from intelligence import extract_all_intelligence
 from agent_persona import generate_honeypot_response, generate_confused_response
 from session_manager import session_manager
 from guvi_callback import send_callback_async
-from engagement_metrics import engagement_tracker
 
 # ── Logging ────────────────────────────────────────────────────────────
 logging.basicConfig(
@@ -24,7 +23,7 @@ logger = logging.getLogger(__name__)
 app = FastAPI(
     title="Agentic Honeypot API",
     description="AI-powered honeypot for scam detection and intelligence extraction",
-    version="2.0.0",
+    version="3.0.0",
 )
 
 app.add_middleware(
@@ -45,9 +44,9 @@ async def add_process_time_header(request: Request, call_next):
     return response
 
 
-# ── Helper ─────────────────────────────────────────────────────────────
+# ── Helpers ────────────────────────────────────────────────────────────
 
-def _build_agent_notes(scam_detected: bool, scam_type: str, keywords: list, intel: ExtractedIntelligence) -> str:
+def _build_agent_notes(scam_detected, scam_type, keywords, intel):
     """Build a descriptive agent notes string."""
     parts = []
     if scam_detected:
@@ -69,13 +68,36 @@ def _build_agent_notes(scam_detected: bool, scam_type: str, keywords: list, inte
     return " ".join(parts)
 
 
-def _build_safe_response(session_id: str, message: str = "") -> dict:
-    """Build a rubric-compliant fallback response that never fails validation."""
-    # Try to use real session data if available
-    session = session_manager.get_session(session_id) if session_id else None
-    metrics = engagement_tracker.get_metrics(session_id) if session_id else None
+def _build_response(session, scam_detected, scam_type, keywords, reply):
+    """Build the rubric-compliant JSON response from session state."""
+    metrics = session.get_engagement_metrics()
+    agent_notes = _build_agent_notes(
+        scam_detected, scam_type, keywords, session.intelligence
+    )
 
-    if session and metrics:
+    return {
+        "sessionId": session.session_id,
+        "status": "success",
+        "scamDetected": scam_detected,
+        "totalMessagesExchanged": metrics["totalMessagesExchanged"],
+        "extractedIntelligence": {
+            "phoneNumbers": session.intelligence.phoneNumbers,
+            "bankAccounts": session.intelligence.bankAccounts,
+            "upiIds": session.intelligence.upiIds,
+            "phishingLinks": session.intelligence.phishingLinks,
+            "emailAddresses": session.intelligence.emailAddresses,
+        },
+        "engagementMetrics": metrics,
+        "agentNotes": agent_notes,
+        "reply": reply,
+    }
+
+
+def _build_error_response(session_id):
+    """Build a rubric-compliant error response using real session data if available."""
+    session = session_manager.get(session_id) if session_id else None
+    if session:
+        metrics = session.get_engagement_metrics()
         return {
             "sessionId": session_id,
             "status": "success",
@@ -89,15 +111,15 @@ def _build_safe_response(session_id: str, message: str = "") -> dict:
                 "emailAddresses": session.intelligence.emailAddresses,
             },
             "engagementMetrics": metrics,
-            "agentNotes": "Scam attempt detected. Processing recovered from error.",
-            "reply": message or "Sorry ji, network problem. Can you repeat that?",
+            "agentNotes": "Scam detected. Processing recovered from error.",
+            "reply": "Sorry ji, network problem. Can you repeat that?",
         }
 
     return {
         "sessionId": session_id or "unknown",
         "status": "success",
         "scamDetected": True,
-        "totalMessagesExchanged": 2,
+        "totalMessagesExchanged": 0,
         "extractedIntelligence": {
             "phoneNumbers": [],
             "bankAccounts": [],
@@ -106,11 +128,11 @@ def _build_safe_response(session_id: str, message: str = "") -> dict:
             "emailAddresses": [],
         },
         "engagementMetrics": {
-            "engagementDurationSeconds": 75,
-            "totalMessagesExchanged": 2,
+            "engagementDurationSeconds": 0,
+            "totalMessagesExchanged": 0,
         },
         "agentNotes": "Scam attempt detected. Honeypot engaged.",
-        "reply": message or "Sorry, I didn't understand. Can you explain again?",
+        "reply": "Sorry, I didn't understand. Can you explain again?",
     }
 
 
@@ -134,9 +156,8 @@ async def analyze_message(
 ):
     """
     Main endpoint — detects scams, extracts intelligence, engages scammer.
-    Returns rubric-compliant JSON in <2 seconds.
+    Returns rubric-compliant JSON. No LLM — guaranteed sub-10ms.
     """
-
     # ── Auth ───────────────────────────────────────────────────────────
     if x_api_key != MY_API_KEY:
         logger.warning(f"Invalid API key attempt: {x_api_key}")
@@ -146,13 +167,12 @@ async def analyze_message(
 
     try:
         message_text = request_body.message.text
-
         logger.info(f"[{session_id}] Processing: {message_text[:80]}")
 
-        # ── Session ────────────────────────────────────────────────────
-        session = session_manager.get_or_create_session(session_id)
+        # ── Session (single source of truth) ───────────────────────────
+        session = session_manager.get_or_create(session_id)
 
-        # ── Scam Detection (skip history scan if already detected) ─────
+        # ── Scam Detection ─────────────────────────────────────────────
         if session.scam_detected:
             scam_detected = True
             keywords = []
@@ -165,24 +185,17 @@ async def analyze_message(
             scam_detected, keywords = detect_scam(message_text, conversation_history)
             scam_type = get_scam_type(keywords) if scam_detected else None
 
-        # ── Intelligence Extraction (current message only — session accumulates) ──
+        # ── Intelligence Extraction (current message only) ─────────────
         current_intel = extract_all_intelligence(message_text)
 
-        # ── Update session ─────────────────────────────────────────────
-        session = session_manager.update_session(
-            session_id=session_id,
-            scam_detected=scam_detected,
-            intelligence=current_intel,
-            scam_type=scam_type or session.scam_type,
-            increment_messages=True,
-        )
+        # ── Update session state ───────────────────────────────────────
+        session.scam_detected = scam_detected or session.scam_detected
+        session.scam_type = scam_type or session.scam_type
+        session.merge_intelligence(current_intel)
+        session.record_turn()  # +1 turn = +2 messages
 
         if keywords:
             session.add_note(f"Keywords: {', '.join(keywords[:5])}")
-
-        # ── Engagement Metrics ─────────────────────────────────────────
-        engagement_tracker.record_message(session_id)
-        metrics = engagement_tracker.get_metrics(session_id)
 
         # ── Response Generation ────────────────────────────────────────
         if scam_detected:
@@ -190,50 +203,32 @@ async def analyze_message(
         else:
             reply = generate_confused_response(message_text)
 
-        # ── Agent Notes ────────────────────────────────────────────────
-        agent_notes = _build_agent_notes(
-            scam_detected, scam_type or session.scam_type, keywords, session.intelligence
+        # ── Build response ─────────────────────────────────────────────
+        response = _build_response(
+            session, scam_detected, scam_type or session.scam_type, keywords, reply
         )
-
-        # ── Build rubric-compliant response ────────────────────────────
-        response = {
-            "sessionId": session_id,
-            "status": "success",
-            "scamDetected": scam_detected,
-            "totalMessagesExchanged": metrics["totalMessagesExchanged"],
-            "extractedIntelligence": {
-                "phoneNumbers": session.intelligence.phoneNumbers,
-                "bankAccounts": session.intelligence.bankAccounts,
-                "upiIds": session.intelligence.upiIds,
-                "phishingLinks": session.intelligence.phishingLinks,
-                "emailAddresses": session.intelligence.emailAddresses,
-            },
-            "engagementMetrics": metrics,
-            "agentNotes": agent_notes,
-            "reply": reply,
-        }
 
         logger.info(
-            f"[{session_id}] scamDetected={scam_detected} "
-            f"msgs={metrics['totalMessagesExchanged']} "
-            f"intel_phones={len(session.intelligence.phoneNumbers)} "
-            f"intel_upi={len(session.intelligence.upiIds)} "
-            f"intel_bank={len(session.intelligence.bankAccounts)}"
+            f"[{session_id}] scam={scam_detected} "
+            f"msgs={response['totalMessagesExchanged']} "
+            f"phones={len(session.intelligence.phoneNumbers)} "
+            f"upi={len(session.intelligence.upiIds)} "
+            f"bank={len(session.intelligence.bankAccounts)}"
         )
 
-        # ── Async callback to GUVI (non-blocking, send once) ──────────
-        if scam_detected and not session.callback_sent and session_manager.should_trigger_early_callback(session_id):
-            session_manager.mark_callback_sent(session_id)
+        # ── Callback to GUVI (once, when we have intelligence) ─────────
+        if session.scam_detected and session.has_intelligence() and not session.callback_sent:
+            session.callback_sent = True
             send_callback_async(session)
 
         return JSONResponse(content=response)
 
     except Exception as e:
         logger.error(f"[{session_id}] Error: {e}", exc_info=True)
-        return JSONResponse(content=_build_safe_response(session_id))
+        return JSONResponse(content=_build_error_response(session_id))
 
 
-# ── Debug / Admin Endpoints ────────────────────────────────────────────
+# ── Debug Endpoints ────────────────────────────────────────────────────
 
 @app.post("/debug/session/{session_id}")
 async def get_session_debug(
@@ -242,7 +237,7 @@ async def get_session_debug(
 ):
     if x_api_key != MY_API_KEY:
         raise HTTPException(status_code=401, detail="Invalid API key")
-    session = session_manager.get_session(session_id)
+    session = session_manager.get(session_id)
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
     return {
@@ -263,10 +258,10 @@ async def force_callback(
 ):
     if x_api_key != MY_API_KEY:
         raise HTTPException(status_code=401, detail="Invalid API key")
-    session = session_manager.get_session(session_id)
+    session = session_manager.get(session_id)
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
     from guvi_callback import send_callback_to_guvi
     success = send_callback_to_guvi(session)
-    session_manager.mark_callback_sent(session_id)
+    session.callback_sent = True
     return {"status": "success", "callback_triggered": True, "guvi_response": success}

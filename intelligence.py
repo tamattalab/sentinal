@@ -7,13 +7,19 @@ logger = logging.getLogger(__name__)
 
 # ── Pre-compiled patterns ──────────────────────────────────────────────
 
-# Phone: 10-digit Indian numbers (optionally prefixed with +91 or 91)
-PHONE_PATTERN = re.compile(r'(?:\+91|91)?[6-9]\d{9}')
+# Phone: 10-digit Indian numbers (starting 6-9), with optional +91/91 prefix
+# Uses \b word boundary to prevent matching substrings of bank account numbers
+PHONE_PATTERN = re.compile(
+    r'(?<!\d)'              # not preceded by a digit
+    r'(?:\+91[\s-]?|91)?'   # optional +91 or 91 prefix
+    r'([6-9]\d{9})'         # capture 10-digit number starting 6-9
+    r'(?!\d)',              # not followed by a digit
+)
 
-# Bank account: 9-18 digit numeric strings (standalone)
-BANK_ACCOUNT_PATTERN = re.compile(r'\b\d{9,18}\b')
+# Bank account: 9-18 digit standalone numbers
+BANK_ACCOUNT_PATTERN = re.compile(r'\b(\d{9,18})\b')
 
-# UPI: name@bankhandle (specific Indian UPI handles)
+# UPI: name@bankhandle (specific Indian UPI handles only)
 UPI_HANDLES = (
     'ybl|paytm|oksbi|okaxis|okicici|okhdfcbank|upi|apl|axl|ibl|sbi|'
     'icici|hdfcbank|axisbank|kotak|indus|federal|barodampay|mahb|'
@@ -27,7 +33,7 @@ UPI_PATTERN = re.compile(
     re.IGNORECASE
 )
 
-# Email: standard email pattern (not UPI)
+# Email: standard email (not UPI)
 EMAIL_PATTERN = re.compile(
     r'[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}'
 )
@@ -39,44 +45,36 @@ URL_PATTERN = re.compile(r'https?://[^\s<>"]+|www\.[^\s<>"]+')
 # ── Extractors ─────────────────────────────────────────────────────────
 
 def extract_phone_numbers(text: str) -> List[str]:
-    """Extract Indian phone numbers (10-digit, starting 6-9)."""
-    raw = PHONE_PATTERN.findall(text)
+    """Extract Indian phone numbers. Returns both raw and +91 prefixed forms."""
+    raw_numbers = PHONE_PATTERN.findall(text)
     result = set()
-    for m in raw:
-        # Normalize: strip prefix, keep raw 10-digit
-        digits = m.lstrip('+')
-        if digits.startswith('91') and len(digits) == 12:
-            digits = digits[2:]
+    for digits in raw_numbers:
+        # digits is always the 10-digit capture group
         if len(digits) == 10:
             result.add(digits)
-            result.add('+91' + digits)
+            result.add("+91" + digits)
     return list(result)
 
 
 def extract_bank_accounts(text: str) -> List[str]:
-    """Extract bank account numbers (9-18 digits), excluding phone numbers."""
+    """Extract bank account numbers (9-18 digits), excluding phone numbers and timestamps."""
     matches = BANK_ACCOUNT_PATTERN.findall(text)
-    phones = set(extract_phone_numbers(text))
-    # Also build set of raw 10-digit phone numbers for filtering
-    phone_digits = set()
-    for p in phones:
-        d = p.lstrip('+')
-        if d.startswith('91'):
-            d = d[2:]
-        phone_digits.add(d)
+    # Get all phone numbers to exclude
+    phone_digits = set(PHONE_PATTERN.findall(text))
 
     filtered = []
     for m in matches:
-        # Skip if this looks like a phone number (10 digits starting 6-9)
-        if len(m) == 10 and m[0] in '6789':
+        # Skip phone numbers (10 digits starting 6-9)
+        if len(m) == 10 and m[0] in "6789":
             continue
-        # Skip 12-digit phone numbers with 91 country code
-        if len(m) == 12 and m.startswith('91') and m[2] in '6789':
+        # Skip 12-digit numbers that look like 91+phone
+        if len(m) == 12 and m.startswith("91") and m[2] in "6789":
             continue
+        # Skip timestamps (13-digit ms timestamps starting with 1)
+        if len(m) == 13 and m.startswith("1"):
+            continue
+        # Skip if it's a known phone number
         if m in phone_digits:
-            continue
-        # Skip timestamps (13-digit ms timestamps)
-        if len(m) == 13 and m.startswith('1'):
             continue
         filtered.append(m)
     return list(set(filtered))
@@ -96,36 +94,15 @@ def extract_email_addresses(text: str) -> List[str]:
     """Extract email addresses, excluding UPI IDs."""
     all_emails = set(EMAIL_PATTERN.findall(text))
     upi_ids = set(extract_upi_ids(text))
-    # Remove any email that is also a UPI ID
     return list(all_emails - upi_ids)
 
 
-def extract_all_intelligence(text: str, existing: ExtractedIntelligence = None) -> ExtractedIntelligence:
-    """Extract all intelligence from text and optionally merge with existing."""
-    new_intel = ExtractedIntelligence(
+def extract_all_intelligence(text: str) -> ExtractedIntelligence:
+    """Extract all intelligence from a single message."""
+    return ExtractedIntelligence(
         phoneNumbers=extract_phone_numbers(text),
         bankAccounts=extract_bank_accounts(text),
         upiIds=extract_upi_ids(text),
         phishingLinks=extract_phishing_links(text),
         emailAddresses=extract_email_addresses(text),
     )
-
-    if existing:
-        return ExtractedIntelligence(
-            phoneNumbers=list(set(existing.phoneNumbers + new_intel.phoneNumbers)),
-            bankAccounts=list(set(existing.bankAccounts + new_intel.bankAccounts)),
-            upiIds=list(set(existing.upiIds + new_intel.upiIds)),
-            phishingLinks=list(set(existing.phishingLinks + new_intel.phishingLinks)),
-            emailAddresses=list(set(existing.emailAddresses + new_intel.emailAddresses)),
-        )
-
-    return new_intel
-
-
-def extract_from_conversation(messages: List[dict]) -> ExtractedIntelligence:
-    """Extract intelligence from entire conversation history."""
-    intel = ExtractedIntelligence()
-    for msg in messages:
-        text = msg.get("text", "")
-        intel = extract_all_intelligence(text, intel)
-    return intel

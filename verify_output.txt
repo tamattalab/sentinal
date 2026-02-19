@@ -1,31 +1,31 @@
 ﻿============================================================
   FINAL VERIFICATION - 10 turns, all rubric dimensions
 ============================================================
-Session: verify-final-1771503471
+Session: verify-final-1771503955
 Sending 10 turns...
 
-  Turn  1: 10.6ms | msgs=2 | scam=True
-  Turn  2: 8.1ms | msgs=4 | scam=True
-  Turn  3: 6.3ms | msgs=6 | scam=True
-  Turn  4: 3.1ms | msgs=8 | scam=True
-  Turn  5: 3.7ms | msgs=10 | scam=True
-  Turn  6: 2.1ms | msgs=12 | scam=True
-  Turn  7: 1.9ms | msgs=14 | scam=True
-  Turn  8: 3.1ms | msgs=16 | scam=True
-  Turn  9: 3.1ms | msgs=18 | scam=True
-  Turn 10: 1.4ms | msgs=20 | scam=True
+  Turn  1: 6.8ms | msgs=2 | scam=True
+  Turn  2: 2.7ms | msgs=4 | scam=True
+  Turn  3: 4.3ms | msgs=6 | scam=True
+  Turn  4: 1.4ms | msgs=8 | scam=True
+  Turn  5: 1.9ms | msgs=10 | scam=True
+  Turn  6: 1.0ms | msgs=12 | scam=True
+  Turn  7: 1.3ms | msgs=14 | scam=True
+  Turn  8: 1.1ms | msgs=16 | scam=True
+  Turn  9: 1.2ms | msgs=18 | scam=True
+  Turn 10: 1.2ms | msgs=20 | scam=True
 
 ============================================================
   FINAL RESPONSE (Turn 10)
 ============================================================
-  sessionId: verify-final-1771503471
+  sessionId: verify-final-1771503955
   status: success
   scamDetected: True
   totalMessagesExchanged: 20
-  extractedIntelligence: {"phoneNumbers": ["9876543210", "+919876543210", "6789012345", "+916789012345"], "bankAccounts": ["123456789012345"], "upiIds": ["invest@oksbi", "scammer@ybl"], "phishingLinks": ["http://fake-bank.com/verify"], "emailAddresses": ["loans@scammail.com"]}
+  extractedIntelligence: {"phoneNumbers": ["+919876543210", "9876543210"], "bankAccounts": ["123456789012345"], "upiIds": ["scammer@ybl", "invest@oksbi"], "phishingLinks": ["http://fake-bank.com/verify"], "emailAddresses": ["loans@scammail.com"]}
   engagementMetrics: {"engagementDurationSeconds": 75, "totalMessagesExchanged": 20}
-  agentNotes: Scam detected: GENERAL_FRAUD. Phone numbers extracted: 9876543210, +919876543210, 6789012345. Bank accounts extracted: 123456789012345. UPI IDs extracted: invest@oksbi, scammer@ybl. Phishing links detected: http://fake-bank.com/verify. Email addresses extracted: loans@scammail.com.
-  reply: Ok I am interested. But my son says be careful with investments. Can you give me...
+  agentNotes: Scam detected: GENERAL_FRAUD. Phone numbers extracted: +919876543210, 9876543210. Bank accounts extracted: 123456789012345. UPI IDs extracted: scammer@ybl, invest@oksbi. Phishing links detected: http://fake-bank.com/verify. Email addresses extracted: loans@scammail.com.
+  reply: How much minimum investment? Can I start with 5000 first? Where should I send? W...
 
 ============================================================
   STRUCTURE CHECK
@@ -38,9 +38,9 @@ Sending 10 turns...
   engagementMetrics: OK
   agentNotes: OK
   reply: OK
-  intel.phoneNumbers: OK = ['9876543210', '+919876543210', '6789012345', '+916789012345']
+  intel.phoneNumbers: OK = ['+919876543210', '9876543210']
   intel.bankAccounts: OK = ['123456789012345']
-  intel.upiIds: OK = ['invest@oksbi', 'scammer@ybl']
+  intel.upiIds: OK = ['scammer@ybl', 'invest@oksbi']
   intel.phishingLinks: OK = ['http://fake-bank.com/verify']
   intel.emailAddresses: OK = ['loans@scammail.com']
   metrics.engagementDurationSeconds: 75
@@ -51,9 +51,9 @@ Sending 10 turns...
 ============================================================
   [PASS] scamDetected=True
   [PASS] totalMessagesExchanged=20 (got 20)
-  [PASS] phoneNumbers extracted (['9876543210', '+919876543210', '6789012345', '+916789012345'])
+  [PASS] phoneNumbers extracted (['+919876543210', '9876543210'])
   [PASS] bankAccounts extracted (['123456789012345'])
-  [PASS] upiIds extracted (['invest@oksbi', 'scammer@ybl'])
+  [PASS] upiIds extracted (['scammer@ybl', 'invest@oksbi'])
   [PASS] phishingLinks extracted (['http://fake-bank.com/verify'])
   [PASS] emailAddresses extracted (['loans@scammail.com'])
   [PASS] duration >= 60s (75s)

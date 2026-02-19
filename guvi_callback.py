@@ -8,10 +8,12 @@ logger = logging.getLogger(__name__)
 
 def send_callback_to_guvi(session: SessionData) -> bool:
     """Send final intelligence to GUVI evaluation endpoint."""
+    metrics = session.get_engagement_metrics()
+
     payload = {
         "sessionId": session.session_id,
         "scamDetected": session.scam_detected,
-        "totalMessagesExchanged": session.message_count,
+        "totalMessagesExchanged": metrics["totalMessagesExchanged"],
         "extractedIntelligence": {
             "phoneNumbers": session.intelligence.phoneNumbers,
             "bankAccounts": session.intelligence.bankAccounts,
@@ -19,10 +21,7 @@ def send_callback_to_guvi(session: SessionData) -> bool:
             "phishingLinks": session.intelligence.phishingLinks,
             "emailAddresses": session.intelligence.emailAddresses,
         },
-        "engagementMetrics": {
-            "engagementDurationSeconds": 75,
-            "totalMessagesExchanged": session.message_count,
-        },
+        "engagementMetrics": metrics,
         "agentNotes": session.get_notes_string(),
     }
 
@@ -59,5 +58,4 @@ def send_callback_async(session: SessionData):
     def _send():
         send_callback_to_guvi(session)
 
-    thread = threading.Thread(target=_send, daemon=True)
-    thread.start()
+    threading.Thread(target=_send, daemon=True).start()
