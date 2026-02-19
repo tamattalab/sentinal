@@ -3,9 +3,9 @@ from typing import List, Optional, Dict, Any
 
 
 class Message(BaseModel):
-    sender: str
-    text: str
-    timestamp: int
+    sender: str = ""
+    text: str = ""
+    timestamp: Optional[int] = 0
 
 
 class Metadata(BaseModel):

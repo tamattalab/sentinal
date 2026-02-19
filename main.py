@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 import logging
 import time
+import json
 
 from config import MY_API_KEY
 from models import AnalyzeRequest, ExtractedIntelligence
@@ -151,7 +152,7 @@ async def health():
 @app.post("/analyze")
 @app.post("/api/analyze")
 async def analyze_message(
-    request_body: AnalyzeRequest,
+    request: Request,
     x_api_key: str = Header(None, alias="x-api-key"),
 ):
     """
@@ -163,18 +164,32 @@ async def analyze_message(
         logger.warning(f"Invalid API key attempt: {x_api_key}")
         raise HTTPException(status_code=401, detail="Invalid API key")
 
+    # ── Parse request body (raw + Pydantic) ────────────────────────────
+    raw_body = await request.json()
+    request_body = AnalyzeRequest(**raw_body)
     session_id = request_body.sessionId
+
+    # Count raw conversation history items (before Pydantic filtering)
+    raw_history = raw_body.get("conversationHistory", []) or []
+    raw_history_count = len(raw_history) if isinstance(raw_history, list) else 0
 
     try:
         message_text = request_body.message.text
         logger.info(f"[{session_id}] Processing: {message_text[:80]}")
+        logger.info(f"[{session_id}] DEBUG: raw_history_count={raw_history_count}, parsed_history_count={len(request_body.conversationHistory or [])}")
+        logger.info(f"[{session_id}] DEBUG: raw_body keys={list(raw_body.keys())}")
+        if raw_history_count > 0:
+            logger.info(f"[{session_id}] DEBUG: first_history_item={json.dumps(raw_history[0])[:200]}")
+            logger.info(f"[{session_id}] DEBUG: last_history_item={json.dumps(raw_history[-1])[:200]}")
 
         # ── Session (single source of truth) ───────────────────────────
         session = session_manager.get_or_create(session_id)
 
         # ── Update message count from conversation history ─────────────
+        # Use the LARGER of raw history count vs parsed history count
         history = request_body.conversationHistory or []
-        session.update_message_count_from_history(len(history))
+        effective_history_count = max(raw_history_count, len(history))
+        session.update_message_count_from_history(effective_history_count)
 
         # ── Scam Detection ─────────────────────────────────────────────
         if session.scam_detected:
@@ -192,7 +207,7 @@ async def analyze_message(
         # ── Intelligence Extraction (current message + full history) ───
         current_intel = extract_all_intelligence(message_text)
 
-        # Also extract from ALL messages in conversation history
+        # Extract from parsed history
         for msg in history:
             history_intel = extract_all_intelligence(msg.text)
             current_intel = ExtractedIntelligence(
@@ -202,6 +217,19 @@ async def analyze_message(
                 phishingLinks=list(set(current_intel.phishingLinks + history_intel.phishingLinks)),
                 emailAddresses=list(set(current_intel.emailAddresses + history_intel.emailAddresses)),
             )
+
+        # Also extract from RAW history items (fallback for dropped Pydantic items)
+        for raw_msg in raw_history:
+            raw_text = raw_msg.get("text", "") if isinstance(raw_msg, dict) else ""
+            if raw_text:
+                raw_intel = extract_all_intelligence(raw_text)
+                current_intel = ExtractedIntelligence(
+                    phoneNumbers=list(set(current_intel.phoneNumbers + raw_intel.phoneNumbers)),
+                    bankAccounts=list(set(current_intel.bankAccounts + raw_intel.bankAccounts)),
+                    upiIds=list(set(current_intel.upiIds + raw_intel.upiIds)),
+                    phishingLinks=list(set(current_intel.phishingLinks + raw_intel.phishingLinks)),
+                    emailAddresses=list(set(current_intel.emailAddresses + raw_intel.emailAddresses)),
+                )
 
         # ── Update session state ───────────────────────────────────────
         session.scam_detected = scam_detected or session.scam_detected
