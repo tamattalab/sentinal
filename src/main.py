@@ -5,7 +5,7 @@ import logging
 import time
 import json
 
-from config import MY_API_KEY
+from config import MY_API_KEY, USE_SLM
 from models import AnalyzeRequest, ExtractedIntelligence, FraudAnalysis
 from scam_detector import detect_scam, get_scam_type, calculate_confidence, extract_suspicious_keywords
 from intelligence import extract_all_intelligence, derive_missing_intelligence
@@ -13,6 +13,7 @@ from agent_persona import generate_honeypot_response, generate_confused_response
 from session_manager import session_manager
 from guvi_callback import send_callback_async
 from fraud_model import analyze_message_fraud_risk
+from slm_engine import slm_engine
 
 # ── Logging ────────────────────────────────────────────────────────────
 logging.basicConfig(
@@ -25,8 +26,18 @@ logger = logging.getLogger(__name__)
 app = FastAPI(
     title="Agentic Honeypot API",
     description="AI-powered honeypot for scam detection and intelligence extraction",
-    version="4.0.0",
+    version="4.4.0",
 )
+
+
+@app.on_event("startup")
+def startup_event():
+    """Warm up SLM model during application startup."""
+    if USE_SLM:
+        logger.info("[STARTUP] Warming up SLM engine...")
+        slm_engine.warmup()
+    else:
+        logger.info("[STARTUP] SLM disabled (USE_SLM=false)")
 
 app.add_middleware(
     CORSMiddleware,
@@ -147,12 +158,17 @@ def _build_agent_notes(session, scam_detected, scam_type, keywords, intel):
     return " | ".join(parts)
 
 
-def _build_response(session, scam_detected, scam_type, keywords, reply, fraud_analysis=None):
+def _build_response(session, scam_detected, scam_type, keywords, reply, fraud_analysis=None, slm_insight=""):
     """Build the rubric-compliant JSON response from session state."""
     metrics = session.get_engagement_metrics()
     agent_notes = _build_agent_notes(
         session, scam_detected, scam_type, keywords, session.intelligence,
     )
+
+    # Append SLM insight if present
+    if slm_insight:
+        agent_notes += f" | SLM Insight: {slm_insight}"
+
     behavioral = session.get_behavioral_intelligence()
 
     # Build fraudAnalysis dict
@@ -475,6 +491,64 @@ async def analyze_message(
             logger.error(f"[{session_id}] Response generation error: {e}")
             reply = "Sorry ji, network problem. Can you repeat what you said?"
 
+        # ── Layer 4D: SLM Refinement (async, toggle-safe) ──────────────
+        slm_insight = ""
+        if USE_SLM:
+            try:
+                rule_intel_dict = {
+                    "phoneNumbers": session.intelligence.phoneNumbers,
+                    "upiIds": session.intelligence.upiIds,
+                    "bankAccounts": session.intelligence.bankAccounts,
+                    "emailAddresses": session.intelligence.emailAddresses,
+                    "phishingLinks": session.intelligence.phishingLinks,
+                }
+                slm_result = await slm_engine.smart_process(
+                    message_text=message_text,
+                    conversation_history=conversation_history,
+                    scam_type=scam_type or session.scam_type or "UNKNOWN",
+                    turn_count=session._turn_count,
+                    rule_detected=scam_detected,
+                    rule_confidence=session.confidence_level,
+                    rule_intel=rule_intel_dict,
+                    rule_reply=reply,
+                )
+
+                if slm_result.get("slm_used"):
+                    # Merge confidence: take the higher
+                    slm_conf = slm_result.get("refined_confidence", 0.0)
+                    if slm_conf > session.confidence_level:
+                        session.confidence_level = slm_conf
+                        logger.info(f"[{session_id}] SLM boosted confidence → {slm_conf:.2f}")
+
+                    # Merge scam type if SLM found a better one
+                    slm_type = slm_result.get("refined_scam_type", "")
+                    if slm_type and slm_type != "UNKNOWN" and (not session.scam_type or session.scam_type == "GENERAL_FRAUD"):
+                        session.scam_type = slm_type
+                        scam_type = slm_type
+
+                    # Merge missed entities into session intelligence
+                    missed = slm_result.get("missed_entities", {})
+                    for field in ["phoneNumbers", "upiIds", "bankAccounts", "emailAddresses", "phishingLinks"]:
+                        new_vals = missed.get(field, [])
+                        if new_vals:
+                            existing = getattr(session.intelligence, field)
+                            for v in new_vals:
+                                if v and v not in existing:
+                                    existing.append(v)
+                            logger.info(f"[{session_id}] SLM added {len(new_vals)} {field}")
+
+                    # Use SLM reply if it's valid and non-empty
+                    slm_reply = slm_result.get("refined_reply", "")
+                    if slm_reply and len(slm_reply) > 15:
+                        reply = slm_reply
+                        logger.info(f"[{session_id}] SLM reply used ({len(slm_reply)} chars)")
+
+                    # Capture insight for agentNotes
+                    slm_insight = slm_result.get("insight", "")
+
+            except Exception as e:
+                logger.error(f"[{session_id}] SLM Layer 4D error: {e}")
+
         # Track response for dedup
         session.add_reply(reply)
 
@@ -486,6 +560,7 @@ async def analyze_message(
         response = _build_response(
             session, scam_detected, scam_type or session.scam_type,
             all_keywords, reply, fraud_analysis=fraud_analysis_obj,
+            slm_insight=slm_insight,
         )
 
         logger.info(
