@@ -89,6 +89,11 @@ class SLMEngine:
 
         self._load_attempted = True
         try:
+            import os
+            # Leapcell: only /tmp is writable — redirect HuggingFace cache there
+            os.environ.setdefault("HF_HOME", "/tmp/.cache/huggingface")
+            os.environ.setdefault("TRANSFORMERS_CACHE", "/tmp/.cache/huggingface")
+
             from transformers import AutoTokenizer, AutoModelForCausalLM, pipeline as hf_pipeline
             import torch
 

@@ -41,10 +41,14 @@ app = FastAPI(
 
 @app.on_event("startup")
 def startup_event():
-    """Warm up SLM model during application startup."""
+    """Warm up SLM model — non-blocking for Leapcell's 9.8s cold-start limit."""
     if USE_SLM:
-        logger.info("[STARTUP] Warming up SLM engine...")
-        slm_engine.warmup()
+        import threading
+        logger.info("[STARTUP] SLM enabled — loading model in background thread...")
+        thread = threading.Thread(target=slm_engine.warmup, daemon=True)
+        thread.start()
+        # Server starts immediately; SLM requests before warmup completes
+        # will safely fall back to rule-based responses (slm_engine.ready=False)
     else:
         logger.info("[STARTUP] SLM disabled (USE_SLM=false)")
 
