@@ -221,6 +221,10 @@ def extract_all_intelligence(text: str) -> ExtractedIntelligence:
     # IFSC codes are valuable bank intelligence
     bank_accts = list(set(bank_accts + ifsc_codes))
 
+    # Extract suspicious keywords using scam_detector
+    from scam_detector import extract_suspicious_keywords
+    suspicious_kw = extract_suspicious_keywords(text)
+
     return ExtractedIntelligence(
         phoneNumbers=extract_phone_numbers(text),
         bankAccounts=bank_accts,
@@ -230,6 +234,7 @@ def extract_all_intelligence(text: str) -> ExtractedIntelligence:
         caseIds=extract_case_ids(text),
         policyNumbers=extract_policy_numbers(text),
         orderNumbers=extract_order_numbers(text),
+        suspiciousKeywords=suspicious_kw,
     )
 
 
@@ -381,5 +386,6 @@ def derive_missing_intelligence(intel: ExtractedIntelligence) -> ExtractedIntell
         caseIds=list(set(case_ids)),
         policyNumbers=list(set(policy_nums)),
         orderNumbers=list(set(order_nums)),
+        suspiciousKeywords=intel.suspiciousKeywords,
     )
 

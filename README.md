@@ -279,3 +279,45 @@ The API uses a **defense-in-depth** error handling strategy:
 ## 📜 License
 
 Built for the **GUVI Sentinal Hackathon 2026** by Team WebCheers.
+
+---
+
+## 🚀 GitHub Deploy Guide (for different accounts)
+
+### Step 1 — Generate a Personal Access Token (PAT)
+1. Go to **GitHub → Settings → Developer settings → Personal access tokens → Tokens (classic)**
+2. Click **Generate new token (classic)**
+3. Select scopes: ✅ `repo` (full control)
+4. Copy the token — you'll only see it once!
+
+### Step 2 — Push to a Different Account's Repo
+
+```bash
+# Add the new remote (replace TOKEN, USERNAME, REPO)
+git remote add sentinal https://TOKEN@github.com/USERNAME/REPO.git
+
+# Push all code
+git push sentinal main --force
+```
+
+**Example for this repo:**
+```bash
+git remote add sentinal https://YOUR_PAT@github.com/cloudtest321/Sentinal-0.git
+git push sentinal main --force
+```
+
+### Step 3 — Set Environment Variables on Railway
+```bash
+railway variables set MY_API_KEY=sentinal-hackathon-2026
+railway variables set API_KEY=sentinal-hackathon-2026
+```
+
+### Step 4 — Deploy to Railway
+```bash
+npm install -g @railway/cli
+railway login
+railway link            # link to your Railway project
+railway up              # deploy!
+```
+
+> ⚠️ **Security**: Never commit your PAT or `.env` file. They are in `.gitignore`.

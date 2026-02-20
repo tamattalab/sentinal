@@ -37,3 +37,7 @@ env/
 
 # Logs
 *.log
+
+# Embedded repos / local brain
+brain/
+src/gnb-fraud-model/

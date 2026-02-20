@@ -256,6 +256,8 @@ HINGLISH_DB = {
             "Thoda clearly batao! Confused ho gaya! Full naam, email, aur callback number dijiye!",
             "Wife pooch rahi hai kaun hai. Full naam, company, phone, aur email batao clearly!",
             "Hearing weak hai meri. Email pe likho — clear padhunga. Email aur phone number kya hai?",
+            "Yeh kaun hai bhai? Main kuch samjha nahi. Naam, company, email, aur phone do pehle!",
+            "Arrey koi toh batao kya ho raha hai? Aapka naam aur email dijiye — main beta se poochunga!",
         ],
         "middle": [
             "Samajh gaya ab. Par verify karna padega. Office address, supervisor ka phone, aur official email bhejo!",
@@ -263,12 +265,82 @@ HINGLISH_DB = {
             "Sab likh raha hoon. Reference number, phone, email, aur manager ka full naam kya hai?",
             "Help karna chahta hoon par risky hai. Phone number, email, aur LinkedIn profile do!",
             "Writing mein chahiye sab. Email pe bhejo. Official email aur case reference number kya hai?",
+            "Beta IT mein kaam karta hai — sab verify karega. Aapka email, phone, aur company details dijiye!",
         ],
         "late": [
             "Kaam kar raha hoon uspe! Par time lagega. Callback number, email, aur WhatsApp do — 30 min mein contact karunga!",
             "Phone ki battery khatam! Email, WhatsApp, aur office address do — landline se contact karunga!",
             "Kal tak time do. Beta aur lawyer se baat karni hai. Phone, email, aur office address do!",
             "Padosi uncle retired bank manager hain. Woh baat karenge. Phone number, email, aur branch details do!",
+            "Mandir ja raha hoon abhi. 1 ghante baad call karunga. Email aur phone number share karo!",
+        ],
+    },
+
+    # === NEW CATEGORIES for missing competition scenarios ===
+
+    "electricity_scam": {
+        "early": [
+            "Bijli kategi?! Par last month pay kiya tha! Receipt hai! Employee ID, sub-division office phone, aur email do!",
+            "Bill pending? Auto-pay lagaya hai! Official portal pe dikhao! DISCOM email aur badge number kya hai?",
+            "Power cut notice? Metre reader ne toh nahi bataya! Officer name, email, aur office landline number do!",
+            "Ghar mein heart patient hai — bijli mat kaato! Complaint number, official email, aur supervisor ka phone do!",
+        ],
+        "middle": [
+            "Kitna baki hai? Abhi pay karta hoon. UPI ID ya bank account batao. Email do bill copy ke liye!",
+            "Beta pay karega online. Payment portal link, CA number, aur email aur phone do confirmation ke liye!",
+            "Payment ready — UPI ya NEFT? Bank account, IFSC, aur email do receipt ke liye!",
+        ],
+        "late": [
+            "Bill pay ho gaya sir! Confirmation nahi aa rahi. WhatsApp aur email do — screenshot bhejta hoon!",
+            "ATM band hai area mein! Kal subah pay karunga. Callback number, email, aur UPI ID do direct pay ke liye!",
+        ],
+    },
+
+    "customs_scam": {
+        "early": [
+            "Parcel seize hua?! Maine toh kuch order nahi kiya! Seizure notice, badge ID, email, aur phone do!",
+            "Drugs?! Impossible! FIR dikhao! Officer ID, official email, aur station phone number kya hai?",
+            "NDPS Act?! Sir main retired teacher hoon! Customs division, badge number, email, aur station landline do!",
+        ],
+        "middle": [
+            "Fine kitna hai? Kahan pay karoon? Official bank account, IFSC, aur customs email do proof ke liye!",
+            "Lawyer bol raha hai written notice chahiye. Email, customs station address, phone, aur case file number do!",
+        ],
+        "late": [
+            "Lawyer payment arrange kar raha hai. Bank details, officer email, aur case reference number dijiye!",
+            "Beta transfer kar raha hai. Phone do confirmation ke liye, email do receipt ke liye, aur reference number do!",
+        ],
+    },
+
+    "govt_scam": {
+        "early": [
+            "Sarkari scheme? Kaun sa ministry? Pension pe careful hoon! Official .gov.in email, officer ID, aur helpline do!",
+            "PM scheme approved? Apply nahi kiya! Kaise select hua? Official notification, email, aur phone number do!",
+            "Housing scheme allotment? Ministry name, official .gov.in email, aur officer designation phone ke saath do!",
+        ],
+        "middle": [
+            "Processing fee sarkari scheme ke liye? Government charge nahi karta! Par pay karunga agar real hai. UPI ID aur email do!",
+            "Letterhead pe letter chahiye. Official email, department postal address, aur phone do verification ke liye!",
+        ],
+        "late": [
+            "Fee beta ne arrange kiya. Bank account, IFSC, beneficiary name, email aur phone do receipt ke liye!",
+            "Collector office jaunga kal verify karne. Department, officer name, email, aur phone do appointment ke liye!",
+        ],
+    },
+
+    "refund_scam": {
+        "early": [
+            "1500 refund? Kahan se? Yaad nahi koi pending refund! Company name, order number, email, aur phone do!",
+            "Bank refund fail? Notification nahi aaya! Employee ID, official email, aur bank helpline number batao!",
+            "Kaun si transaction ka refund? Order number, aapka naam, email, aur customer care phone do!",
+        ],
+        "middle": [
+            "Bank details de dunga par pehle verify karenge. Company email pehle bhejo. Phone bhi do callback ke liye!",
+            "IFSC dunga par kaun se bank ka? Official email, refund reference number, aur phone do pehle!",
+        ],
+        "late": [
+            "Details diye par refund nahi aaya! Check karo. Email, phone, aur escalation manager ka number bhi do!",
+            "Beta bank statement check kar raha hai — koi credit nahi. Email, complaint number, aur supervisor ka phone do!",
         ],
     },
 }

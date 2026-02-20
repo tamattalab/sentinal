@@ -6,12 +6,13 @@ import time
 import json
 
 from config import MY_API_KEY
-from models import AnalyzeRequest, ExtractedIntelligence
-from scam_detector import detect_scam, get_scam_type
+from models import AnalyzeRequest, ExtractedIntelligence, FraudAnalysis
+from scam_detector import detect_scam, get_scam_type, calculate_confidence, extract_suspicious_keywords
 from intelligence import extract_all_intelligence, derive_missing_intelligence
 from agent_persona import generate_honeypot_response, generate_confused_response
 from session_manager import session_manager
 from guvi_callback import send_callback_async
+from fraud_model import analyze_message_fraud_risk
 
 # ── Logging ────────────────────────────────────────────────────────────
 logging.basicConfig(
@@ -24,7 +25,7 @@ logger = logging.getLogger(__name__)
 app = FastAPI(
     title="Agentic Honeypot API",
     description="AI-powered honeypot for scam detection and intelligence extraction",
-    version="3.0.0",
+    version="4.0.0",
 )
 
 app.add_middleware(
@@ -47,37 +48,20 @@ async def add_process_time_header(request: Request, call_next):
 
 # ── Helpers ────────────────────────────────────────────────────────────
 
-def _build_agent_notes(scam_detected, scam_type, keywords, intel,
-                       red_flags_detected=None, probing_questions_asked=None):
+def _build_agent_notes(session, scam_detected, scam_type, keywords, intel):
     """Build a descriptive agent notes string with red-flag analysis and probing strategy."""
     parts = []
 
     if scam_detected:
         parts.append(f"Scam Type: {scam_type or 'GENERAL_FRAUD'}")
-        parts.append(f"Confidence Level: {getattr(session, 'confidence_level', 0.85) if 'session' in dir() else 0.85}")
+        parts.append(f"Confidence Level: {session.confidence_level}")
 
-        # Tactics identified
-        tactics = []
-        kw_set = set(k.lower() for k in keywords) if keywords else set()
-        if kw_set & {"urgent", "immediately", "blocked", "suspended"}:
-            tactics.append("Urgency/Fear")
-        if kw_set & {"otp", "pin", "cvv"}:
-            tactics.append("Credential Theft")
-        if kw_set & {"kyc", "verify", "verification", "update"}:
-            tactics.append("KYC Impersonation")
-        if kw_set & {"won", "winner", "prize", "lottery", "reward"}:
-            tactics.append("Prize Bait")
-        if kw_set & {"invest", "profit", "returns", "bitcoin"}:
-            tactics.append("Investment Fraud")
-        if kw_set & {"bank", "account", "transfer"}:
-            tactics.append("Banking Fraud")
-        if kw_set & {"contains_url"}:
-            tactics.append("Phishing Link")
-        if not tactics:
-            tactics.append("Social Engineering")
-        parts.append(f"Tactics: {', '.join(tactics)}")
+        # Tactics identified from behavioral intel
+        behavioral = session.get_behavioral_intelligence()
+        if behavioral.tacticsUsed:
+            parts.append(f"Tactics: {', '.join(behavioral.tacticsUsed)}")
 
-        # Intelligence summary (ALL 8 fields)
+        # Intelligence summary (ALL 9 fields including suspiciousKeywords)
         intel_items = []
         if intel.phoneNumbers:
             intel_items.append(f"{len(intel.phoneNumbers)} phone(s)")
@@ -95,44 +79,66 @@ def _build_agent_notes(scam_detected, scam_type, keywords, intel,
             intel_items.append(f"{len(intel.policyNumbers)} policy number(s)")
         if intel.orderNumbers:
             intel_items.append(f"{len(intel.orderNumbers)} order/txn number(s)")
+        if intel.suspiciousKeywords:
+            intel_items.append(f"{len(intel.suspiciousKeywords)} suspicious keyword(s)")
         if intel_items:
             parts.append(f"Intelligence Extracted: {', '.join(intel_items)}")
 
         # Red flags — EXPLICIT section for GUVI evaluator
-        red_flag_items = []
-        if kw_set & {"urgent", "immediately", "now"}:
-            red_flag_items.append("Artificial urgency — pressuring victim to act without thinking")
-        if kw_set & {"blocked", "suspended", "deactivated"}:
-            red_flag_items.append("Account threat — fake claims of account suspension to create panic")
-        if kw_set & {"otp", "pin", "cvv", "password"}:
-            red_flag_items.append("Credential request — asking for OTP/PIN/CVV which banks never request")
-        if kw_set & {"contains_url"}:
-            red_flag_items.append("Suspicious URL shared — potential phishing link to steal credentials")
-        if kw_set & {"won", "winner", "prize", "lottery", "reward"}:
-            red_flag_items.append("Unsolicited prize notification — classic advance-fee fraud indicator")
-        if kw_set & {"invest", "profit", "guaranteed", "returns", "doubl"}:
-            red_flag_items.append("Guaranteed returns promise — no legitimate investment offers risk-free profits")
-        if kw_set & {"kyc", "verify", "verification"}:
-            red_flag_items.append("KYC request via phone/SMS — banks only do KYC verification in-branch")
-        if kw_set & {"arrest", "police", "legal", "fir", "warrant"}:
-            red_flag_items.append("Legal intimidation — fake law enforcement threats to coerce compliance")
-        if kw_set & {"transfer", "send", "pay", "fee", "charge"}:
-            red_flag_items.append("Advance fee request — asking victim to pay upfront before receiving service")
-        # Add from current turn's detected red flag
-        if red_flags_detected:
-            for rf in red_flags_detected:
-                if rf and rf not in red_flag_items:
-                    red_flag_items.append(rf)
-        if not red_flag_items:
-            red_flag_items.append("Unsolicited contact — no legitimate organization cold-calls requesting personal info")
-        parts.append(f"Red Flags Identified: {'; '.join(red_flag_items)}")
+        if session._red_flags:
+            parts.append(f"Red Flags Identified: {'; '.join(session._red_flags[:8])}")
+        else:
+            # Generate from keywords as fallback
+            kw_set = set(k.lower() for k in keywords) if keywords else set()
+            red_flag_items = []
+            if kw_set & {"urgent", "immediately", "now"}:
+                red_flag_items.append("Artificial urgency — pressuring victim to act without thinking")
+            if kw_set & {"blocked", "suspended", "deactivated"}:
+                red_flag_items.append("Account threat — fake claims of account suspension to create panic")
+            if kw_set & {"otp", "pin", "cvv", "password"}:
+                red_flag_items.append("Credential request — asking for OTP/PIN/CVV which banks never request")
+            if kw_set & {"contains_url"}:
+                red_flag_items.append("Suspicious URL shared — potential phishing link to steal credentials")
+            if kw_set & {"won", "winner", "prize", "lottery", "reward"}:
+                red_flag_items.append("Unsolicited prize notification — classic advance-fee fraud indicator")
+            if kw_set & {"invest", "profit", "guaranteed", "returns"}:
+                red_flag_items.append("Guaranteed returns promise — no legitimate investment offers risk-free profits")
+            if kw_set & {"kyc", "verify", "verification"}:
+                red_flag_items.append("KYC request via phone/SMS — banks only do KYC verification in-branch")
+            if kw_set & {"arrest", "police", "legal", "fir", "warrant"}:
+                red_flag_items.append("Legal intimidation — fake law enforcement threats to coerce compliance")
+            if kw_set & {"transfer", "send", "pay", "fee", "charge"}:
+                red_flag_items.append("Advance fee request — asking victim to pay upfront before receiving service")
+            if not red_flag_items:
+                red_flag_items.append("Unsolicited contact — no legitimate organization cold-calls requesting personal info")
+            parts.append(f"Red Flags Identified: {'; '.join(red_flag_items)}")
 
         # Probing questions — EXPLICIT section for GUVI evaluator
-        if probing_questions_asked:
-            parts.append(f"Probing Questions Asked: {'; '.join(probing_questions_asked)}")
+        if session._probing_questions:
+            parts.append(f"Probing Questions Asked: {'; '.join(session._probing_questions[:5])}")
+
+        # Escalation pattern
+        escalation = session.get_escalation_pattern()
+        if escalation != "none":
+            parts.append(f"Escalation Pattern: {escalation}")
+
+        # Manipulation types
+        if session._manipulation_types:
+            parts.append(f"Manipulation Types: {', '.join(session._manipulation_types)}")
 
         if keywords:
-            parts.append(f"Keywords: {', '.join(keywords[:8])}")
+            parts.append(f"Keywords: {', '.join(keywords[:10])}")
+
+    # GNB Fraud Model score
+    fraud_cache = getattr(session, 'fraud_analysis', {})
+    if fraud_cache:
+        parts.append(
+            f"GNB Fraud Risk: {fraud_cache.get('transactionRiskScore',0)}/100 "
+            f"({fraud_cache.get('riskLevel','?')}) | "
+            f"Label={fraud_cache.get('fraudLabel','?')} | "
+            f"Prob={fraud_cache.get('fraudProbability',0):.3f} | "
+            f"Model: JP Morgan GaussianNB"
+        )
     else:
         parts.append("No scam detected yet")
         parts.append("Monitoring conversation for suspicious activity")
@@ -141,15 +147,23 @@ def _build_agent_notes(scam_detected, scam_type, keywords, intel,
     return " | ".join(parts)
 
 
-def _build_response(session, scam_detected, scam_type, keywords, reply, 
-                    red_flags_detected=None, probing_questions_asked=None):
+def _build_response(session, scam_detected, scam_type, keywords, reply, fraud_analysis=None):
     """Build the rubric-compliant JSON response from session state."""
     metrics = session.get_engagement_metrics()
     agent_notes = _build_agent_notes(
-        scam_detected, scam_type, keywords, session.intelligence,
-        red_flags_detected=red_flags_detected,
-        probing_questions_asked=probing_questions_asked,
+        session, scam_detected, scam_type, keywords, session.intelligence,
     )
+    behavioral = session.get_behavioral_intelligence()
+
+    # Build fraudAnalysis dict
+    fraud_dict = {
+        "fraudLabel": fraud_analysis.fraudLabel if fraud_analysis else "fraudulent",
+        "fraudProbability": fraud_analysis.fraudProbability if fraud_analysis else 0.0,
+        "transactionRiskScore": fraud_analysis.transactionRiskScore if fraud_analysis else 0,
+        "riskLevel": fraud_analysis.riskLevel if fraud_analysis else "HIGH",
+        "features": fraud_analysis.features if fraud_analysis else {},
+        "modelInfo": fraud_analysis.modelInfo if fraud_analysis else "GaussianNB (JP Morgan)",
+    }
 
     return {
         "sessionId": session.session_id,
@@ -168,11 +182,21 @@ def _build_response(session, scam_detected, scam_type, keywords, reply,
             "caseIds": session.intelligence.caseIds,
             "policyNumbers": session.intelligence.policyNumbers,
             "orderNumbers": session.intelligence.orderNumbers,
+            "suspiciousKeywords": session.intelligence.suspiciousKeywords,
         },
         "engagementMetrics": metrics,
+        "behavioralIntelligence": {
+            "escalationPattern": behavioral.escalationPattern,
+            "manipulationTypes": behavioral.manipulationTypes,
+            "redFlagsIdentified": behavioral.redFlagsIdentified,
+            "probingQuestionsAsked": behavioral.probingQuestionsAsked,
+            "scammerProfile": behavioral.scammerProfile,
+            "tacticsUsed": behavioral.tacticsUsed,
+        },
+        "fraudAnalysis": fraud_dict,
         "agentNotes": agent_notes,
-        "redFlags": red_flags_detected or [],
-        "probingQuestions": probing_questions_asked or [],
+        "redFlags": session._red_flags,
+        "probingQuestions": session._probing_questions,
         "reply": reply,
     }
 
@@ -200,6 +224,7 @@ def _build_error_response(session_id):
             "phoneNumbers": [], "bankAccounts": [], "upiIds": [],
             "phishingLinks": [], "emailAddresses": [],
             "caseIds": [], "policyNumbers": [], "orderNumbers": [],
+            "suspiciousKeywords": [],
         },
         "engagementMetrics": {
             "engagementDurationSeconds": 0,
@@ -234,7 +259,7 @@ async def analyze_message(
     """
     # ── Auth ───────────────────────────────────────────────────────────
     if x_api_key != MY_API_KEY:
-        logger.warning(f"Invalid API key attempt: {x_api_key}")
+        logger.warning(f"Invalid API key attempt")
         raise HTTPException(status_code=401, detail="Invalid API key")
 
     session_id = None
@@ -279,21 +304,18 @@ async def analyze_message(
             parsed_history = []
 
         logger.info(f"[{session_id}] Processing: {message_text[:80]}")
-        logger.info(
-            f"[{session_id}] raw_history={len(raw_history)}, "
-            f"parsed_history={len(parsed_history)}, "
-            f"keys={list(raw_body.keys())}"
-        )
 
         # ── Session (single source of truth) ───────────────────────────
         session = session_manager.get_or_create(session_id)
 
         # ── Update message count and duration from conversation history ──
-        # Use the LARGER of raw vs parsed history counts
         effective_history_count = max(len(raw_history), len(parsed_history))
         session.update_message_count_from_history(effective_history_count)
-        # Calculate real duration from GUVI conversation timestamps
         session.update_duration_from_history(raw_history)
+
+        # ── Behavioral tracking ────────────────────────────────────────
+        session.track_manipulation(message_text)
+        session.track_escalation(message_text)
 
         # ── Scam Detection ─────────────────────────────────────────────
         # Build history dicts from raw data (most tolerant)
@@ -306,22 +328,35 @@ async def analyze_message(
                     "timestamp": item.get("timestamp", 0),
                 })
 
-        # ALWAYS run detection to extract keywords (even if scam already confirmed)
+        # ALWAYS run detection to extract keywords
         scam_detected_now, keywords, scam_score = detect_scam(message_text, conversation_history)
+
+        # Count categories hit for confidence calculation
+        categories_hit = len(set(
+            cat for cat, kw_list in {
+                "urgency": ["urgent", "immediately", "blocked"],
+                "threat": ["arrest", "police", "legal"],
+                "financial": ["bank", "upi", "otp"],
+                "reward": ["won", "prize", "lottery"],
+            }.items()
+            if any(k in [x.lower() for x in keywords] for k in kw_list)
+        ))
 
         if session.scam_detected:
             scam_detected = True
             scam_type = session.scam_type
-            # Still accumulate new keywords from this turn
+            # Accumulate new keywords
             if keywords:
                 for kw in keywords:
                     if kw not in session.accumulated_keywords:
                         session.accumulated_keywords.append(kw)
-                # Increase confidence with more evidence each turn
-                new_confidence = min(0.50 + scam_score * 0.03, 0.99)
-                new_confidence = round(new_confidence, 2)
+                # Recalculate confidence with sigmoid
+                new_confidence = calculate_confidence(
+                    scam_score, len(session.accumulated_keywords),
+                    categories_hit, len(conversation_history)
+                )
                 session.confidence_level = max(session.confidence_level, new_confidence)
-                # Re-classify scam type if we now have better keywords
+                # Re-classify scam type if better keywords
                 better_type = get_scam_type(session.accumulated_keywords)
                 if better_type != "GENERAL_FRAUD":
                     session.scam_type = better_type
@@ -332,11 +367,12 @@ async def analyze_message(
 
             if scam_detected:
                 session.accumulated_keywords = list(keywords)
-                confidence = min(0.50 + scam_score * 0.03, 0.99)
-                confidence = round(confidence, 2)
+                confidence = calculate_confidence(
+                    scam_score, len(keywords), categories_hit, len(conversation_history)
+                )
                 session.confidence_level = max(session.confidence_level, confidence)
 
-            # Also classify scamType from full history for better accuracy
+            # Classify from full history for better accuracy
             if scam_detected and scam_type == "GENERAL_FRAUD" and conversation_history:
                 all_history_text = " ".join(h.get("text", "") for h in conversation_history)
                 _, history_keywords, _ = detect_scam(all_history_text)
@@ -348,13 +384,12 @@ async def analyze_message(
         try:
             current_intel = extract_all_intelligence(message_text)
 
-            # Extract from ALL raw history items using merge_intelligence
+            # Extract from ALL raw history items
             for item in raw_history:
                 if isinstance(item, dict):
                     item_text = item.get("text", item.get("content", ""))
                     if item_text:
                         item_intel = extract_all_intelligence(item_text)
-                        # Use proper merge (same method session uses)
                         current_intel = ExtractedIntelligence(
                             phoneNumbers=list(set(current_intel.phoneNumbers + item_intel.phoneNumbers)),
                             bankAccounts=list(set(current_intel.bankAccounts + item_intel.bankAccounts)),
@@ -364,10 +399,17 @@ async def analyze_message(
                             caseIds=list(set(current_intel.caseIds + item_intel.caseIds)),
                             policyNumbers=list(set(current_intel.policyNumbers + item_intel.policyNumbers)),
                             orderNumbers=list(set(current_intel.orderNumbers + item_intel.orderNumbers)),
+                            suspiciousKeywords=list(set(current_intel.suspiciousKeywords + item_intel.suspiciousKeywords)),
                         )
         except Exception as e:
             logger.error(f"[{session_id}] Intelligence extraction error: {e}")
             current_intel = ExtractedIntelligence()
+
+        # ── Also add accumulated keywords to suspicious keywords ───────
+        if session.accumulated_keywords:
+            current_intel.suspiciousKeywords = list(set(
+                current_intel.suspiciousKeywords + session.accumulated_keywords[:15]
+            ))
 
         # ── Update session state ───────────────────────────────────────
         session.scam_detected = scam_detected or session.scam_detected
@@ -384,10 +426,36 @@ async def analyze_message(
         if keywords:
             session.add_note(f"Turn {session._turn_count}: {', '.join(keywords[:5])}")
 
+        # ── GaussianNB Fraud Model (JP Morgan) ─────────────────────────
+        fraud_result = {}
+        fraud_analysis_obj = FraudAnalysis()
+        try:
+            fraud_result = analyze_message_fraud_risk(
+                message_text=message_text,
+                scam_type=scam_type or session.scam_type,
+                conversation_history=conversation_history,
+            )
+            fraud_analysis_obj = FraudAnalysis(
+                fraudLabel=fraud_result.get("fraudLabel", "fraudulent"),
+                fraudProbability=fraud_result.get("fraudProbability", 0.0),
+                transactionRiskScore=fraud_result.get("transactionRiskScore", 0),
+                riskLevel=fraud_result.get("riskLevel", "HIGH"),
+                features=fraud_result.get("features", {}),
+                modelInfo=fraud_result.get("modelInfo", ""),
+            )
+            session.fraud_analysis = fraud_result  # cache on session
+            logger.info(
+                f"[{session_id}] FraudModel: {fraud_result.get('fraudLabel')} "
+                f"risk={fraud_result.get('transactionRiskScore')}/100 "
+                f"level={fraud_result.get('riskLevel')}"
+            )
+        except Exception as e:
+            logger.error(f"[{session_id}] FraudModel error: {e}")
+
         # Use accumulated keywords for rich agent notes
         all_keywords = session.accumulated_keywords if session.accumulated_keywords else keywords
 
-        # ── Response Generation ────────────────────────────────────────
+        # ── Response Generation (with dedup) ───────────────────────────
         red_flag = ""
         probe = ""
         try:
@@ -396,28 +464,28 @@ async def analyze_message(
                     current_message=message_text,
                     turn_count=session._turn_count,
                     scam_type=scam_type or session.scam_type,
+                    previous_replies=session.previous_replies,
                 )
             else:
-                reply, red_flag, probe = generate_confused_response(message_text)
+                reply, red_flag, probe = generate_confused_response(
+                    message_text,
+                    previous_replies=session.previous_replies,
+                )
         except Exception as e:
             logger.error(f"[{session_id}] Response generation error: {e}")
             reply = "Sorry ji, network problem. Can you repeat what you said?"
 
-        # Track red flags and probing questions across session
-        if not hasattr(session, '_red_flags'):
-            session._red_flags = []
-        if not hasattr(session, '_probing_questions'):
-            session._probing_questions = []
-        if red_flag and red_flag not in session._red_flags:
-            session._red_flags.append(red_flag)
-        if probe and probe not in session._probing_questions:
-            session._probing_questions.append(probe)
+        # Track response for dedup
+        session.add_reply(reply)
+
+        # Track red flags and probing questions
+        session.track_red_flag(red_flag)
+        session.track_probing_question(probe)
 
         # ── Build response ─────────────────────────────────────────────
         response = _build_response(
-            session, scam_detected, scam_type or session.scam_type, all_keywords, reply,
-            red_flags_detected=session._red_flags,
-            probing_questions_asked=session._probing_questions,
+            session, scam_detected, scam_type or session.scam_type,
+            all_keywords, reply, fraud_analysis=fraud_analysis_obj,
         )
 
         logger.info(
@@ -431,12 +499,9 @@ async def analyze_message(
 
         # ── Callback to GUVI (every turn — always send latest data) ──────
         if session.scam_detected and session.has_intelligence():
-            # Store rich notes summary for callback (replaces previous, no leak)
             session._last_rich_notes = _build_agent_notes(
-                scam_detected, scam_type or session.scam_type,
+                session, scam_detected, scam_type or session.scam_type,
                 all_keywords, session.intelligence,
-                red_flags_detected=getattr(session, '_red_flags', []),
-                probing_questions_asked=getattr(session, '_probing_questions', []),
             )
             send_callback_async(session)
 
@@ -464,9 +529,12 @@ async def get_session_debug(
         "scam_detected": session.scam_detected,
         "scam_type": session.scam_type,
         "message_count": session.message_count,
+        "turn_count": session._turn_count,
         "intelligence": session.intelligence.model_dump(),
         "callback_sent": session.callback_sent,
         "notes": session.agent_notes,
+        "behavioral": session.get_behavioral_intelligence().model_dump(),
+        "previous_replies": session.previous_replies[-3:],
     }
 
 

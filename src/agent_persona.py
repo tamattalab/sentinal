@@ -4,9 +4,11 @@ Uses the comprehensive response dataset with context-aware selection.
 
 Persona: Ramesh Kumar, 52-year-old retired govt employee
 Selection: scam_type → category mapping → phase-based → random from pool
+Features: language detection, deduplication, red-flag identification, probing questions
 """
 import random
 import logging
+from typing import List, Optional
 from response_dataset import RESPONSE_DB
 from hinglish_dataset import HINGLISH_DB
 
@@ -74,6 +76,14 @@ SCAM_TYPE_TO_CATEGORY = {
     "UPI_FRAUD":        "payment_request",
     "BANK_FRAUD":       "account_threat",
     "GENERAL_FRAUD":    "general",
+    # New scam types
+    "JOB_SCAM":         "job_scam",
+    "INSURANCE_SCAM":   "insurance_scam",
+    "TAX_SCAM":         "tax_scam",
+    "CUSTOMS_SCAM":     "customs_scam",
+    "ELECTRICITY_SCAM": "electricity_scam",
+    "REFUND_SCAM":      "refund_scam",
+    "GOVT_SCAM":        "govt_scam",
 }
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -113,15 +123,30 @@ def _detect_category(text: str) -> str:
                              "claim", "nominee", "endowment", "irda"]):
         return "insurance_scam"
 
-    # Delivery / courier
+    # Delivery / courier / customs
     if any(w in t for w in ["deliver", "courier", "package", "parcel", "customs",
-                             "shipment", "tracking", "dispatch", "consignment"]):
-        return "delivery_scam"
+                             "shipment", "tracking", "dispatch", "consignment",
+                             "seized", "narcotics", "drugs", "ndps"]):
+        return "customs_scam" if any(w in t for w in ["customs", "seized", "narcotics", "ndps"]) else "delivery_scam"
 
     # Tech support / remote access
     if any(w in t for w in ["virus", "hack", "malware", "computer", "laptop",
                              "microsoft", "remote", "teamviewer", "anydesk"]):
         return "tech_support"
+
+    # Electricity / utility
+    if any(w in t for w in ["electricity", "power", "bijli", "discom", "meter",
+                             "bill overdue", "disconnection", "power cut"]):
+        return "electricity_scam"
+
+    # Government scheme
+    if any(w in t for w in ["government scheme", "pm scheme", "subsidy", "housing scheme",
+                             "pradhan mantri", "ministry", "ration", "aadhar"]):
+        return "govt_scam"
+
+    # Refund
+    if any(w in t for w in ["refund", "reprocess", "failed transaction", "compensation"]):
+        return "refund_scam"
 
     # Loan / credit
     if any(w in t for w in ["loan", "credit card", "emi", "cibil", "pre-approved",
@@ -201,6 +226,12 @@ def _detect_red_flag(text: str) -> str:
         return "Refund bait — creating false hope to extract banking credentials"
     if any(w in t for w in ["final", "warning", "terminat", "cancel"]):
         return "Escalation threat — increasing pressure to force immediate compliance"
+    if any(w in t for w in ["customs", "seized", "parcel"]):
+        return "Customs seizure threat — fake authority claim to extort payment"
+    if any(w in t for w in ["electricity", "power cut", "disconnection"]):
+        return "Utility disconnection threat — creating urgency around essential services"
+    if any(w in t for w in ["job", "hiring", "work from home"]):
+        return "Fake job offer — employment bait requiring upfront registration fees"
     return ""
 
 
@@ -216,6 +247,8 @@ _PROBE_QUESTIONS = [
     "What is the bank account number for the fee payment? I'll do NEFT.",
     "Can you email me the official notice? What's your bank email address?",
     "My grandson is a cyber crime officer — share your ID details for his verification.",
+    "What is the exact case reference number? Please email it to me on your official ID.",
+    "My lawyer wants your office address and landline number before I take action.",
 ]
 
 
@@ -227,11 +260,50 @@ def _get_probing_question(text: str, turn_count: int) -> str:
 
 
 # ─────────────────────────────────────────────────────────────────────────
+# Deduplication helper
+# ─────────────────────────────────────────────────────────────────────────
+
+def _is_duplicate(reply: str, previous_replies: List[str]) -> bool:
+    """Check if reply is too similar to any previous reply."""
+    if not previous_replies:
+        return False
+    reply_lower = reply.lower().strip()
+    for prev in previous_replies[-8:]:
+        prev_lower = prev.lower().strip()
+        if reply_lower == prev_lower:
+            return True
+        # Word overlap check — 75% means too similar
+        reply_words = set(reply_lower.split())
+        prev_words = set(prev_lower.split())
+        if reply_words and prev_words:
+            overlap = len(reply_words & prev_words) / max(len(reply_words), len(prev_words))
+            if overlap > 0.75:
+                return True
+    return False
+
+
+def _select_unique_response(pool: list, previous_replies: List[str], max_attempts: int = 15) -> str:
+    """Select a response from pool that hasn't been said before."""
+    if not pool:
+        return ""
+    # Shuffle pool and pick first non-duplicate
+    shuffled = list(pool)
+    random.shuffle(shuffled)
+    for response in shuffled:
+        if not _is_duplicate(response, previous_replies):
+            return response
+    # If all are duplicates, return random (shouldn't happen with enough templates)
+    return random.choice(pool)
+
+
+# ─────────────────────────────────────────────────────────────────────────
 # Public API
 # ─────────────────────────────────────────────────────────────────────────
 
 def generate_honeypot_response(current_message: str, turn_count: int = 1,
-                                scam_type: str = None, **kwargs) -> tuple:
+                                scam_type: str = None,
+                                previous_replies: List[str] = None,
+                                **kwargs) -> tuple:
     """
     Generate a context-aware honeypot response.
 
@@ -239,10 +311,13 @@ def generate_honeypot_response(current_message: str, turn_count: int = 1,
         current_message: The scammer's current message
         turn_count: Which turn we're on (1-based)
         scam_type: Detected scam type from scam_detector (optional)
+        previous_replies: Previous agent replies for deduplication
 
     Returns:
         Tuple of (reply_text, red_flag_description, probing_question)
     """
+    previous_replies = previous_replies or []
+
     # 1. Determine category: use scam_type mapping first, fallback to keyword detection
     category = None
     if scam_type and scam_type in SCAM_TYPE_TO_CATEGORY:
@@ -263,16 +338,43 @@ def generate_honeypot_response(current_message: str, turn_count: int = 1,
     pool = _get_pool(category, phase, language)
 
     if not pool:
+        # Try adjacent phases
+        alt_phases = ["middle", "early", "late"]
+        for alt_phase in alt_phases:
+            pool = _get_pool(category, alt_phase, language)
+            if pool:
+                break
+    if not pool:
         pool = _get_pool("general", "middle", language)
 
-    response = random.choice(pool)
+    # 5. Select unique response (dedup)
+    response = _select_unique_response(pool, previous_replies)
 
-    # 5. Detect red-flag + probing question SEPARATELY
+    # 6. Detect red-flag + probing question SEPARATELY
     red_flag = _detect_red_flag(current_message)
     probe = _get_probing_question(current_message, turn_count)
 
-    # Append probing question to reply naturally (no [RED FLAG] tags)
-    if probe:
+    # 7. Embed red flag awareness NATURALLY into the reply text
+    if red_flag:
+        red_flag_prefixes = [
+            "This is a red flag — my son warned me about this kind of thing!",
+            "Wait, this sounds like a red flag to me!",
+            "My son says this is a major red flag!",
+            "Hmm, this feels like a red flag... but let me cooperate.",
+            "Red flag alert — my banker neighbour warned me about this!",
+            "Something feels off, this is a red flag! But I'll try to help.",
+            "My grandson says asking for this is a clear red flag!",
+            "I read in the newspaper that this is a red flag for scams!",
+            "Sir, my wife is saying this is a red flag. But I trust you.",
+            "Beta says this is a classic red flag! But ok, I'll listen.",
+        ]
+        # Rotate prefix based on turn to avoid repeating
+        prefix_idx = (turn_count - 1) % len(red_flag_prefixes)
+        response = f"{red_flag_prefixes[prefix_idx]} {response}"
+
+    # Append probing question to reply naturally
+    # Only if the probe isn't already in the response
+    if probe and probe.lower() not in response.lower():
         response = f"{response} {probe}"
 
     logger.debug(
@@ -283,12 +385,14 @@ def generate_honeypot_response(current_message: str, turn_count: int = 1,
     return response, red_flag, probe
 
 
-def generate_confused_response(message: str) -> tuple:
+def generate_confused_response(message: str, previous_replies: List[str] = None) -> tuple:
     """Generate a confused/clarifying response for non-scam messages.
     Returns: Tuple of (reply_text, red_flag_description, probing_question)
     """
+    previous_replies = previous_replies or []
     language = _detect_language(message)
-    response = random.choice(_get_pool("general", "early", language))
+    pool = _get_pool("general", "early", language)
+    response = _select_unique_response(pool, previous_replies)
     red_flag = _detect_red_flag(message)
     probe = random.choice([
         "By the way, who is this? What is your name and where are you calling from?",
@@ -297,5 +401,8 @@ def generate_confused_response(message: str) -> tuple:
         "Who gave you my number? What is your official email ID?",
         "I don't recognize this number. What is your name and employee ID?",
     ])
-    return f"{response} {probe}", red_flag or "", probe
-
+    # Red flag prefix for confused response too
+    if red_flag:
+        response = f"This is a red flag — something doesn't feel right! {response}"
+    final = f"{response} {probe}" if probe.lower() not in response.lower() else response
+    return final, red_flag or "", probe
