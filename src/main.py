@@ -150,35 +150,16 @@ def _build_response(session, scam_detected, scam_type, keywords, reply):
 
 
 def _build_error_response(session_id):
-    """Build a rubric-compliant error response using real session data if available."""
+    """Build a rubric-compliant error response using session data if available."""
     session = session_manager.get(session_id) if session_id else None
     if session:
-        metrics = session.get_engagement_metrics()
-        all_kw = session.accumulated_keywords if session.accumulated_keywords else []
-        notes = _build_agent_notes(session.scam_detected, session.scam_type, all_kw, session.intelligence)
-        return {
-            "sessionId": session_id,
-            "status": "success",
-            "scamDetected": True,
-            "scamType": session.scam_type or "GENERAL_FRAUD",
-            "confidenceLevel": session.confidence_level,
-            "totalMessagesExchanged": metrics["totalMessagesExchanged"],
-            "engagementDurationSeconds": metrics["engagementDurationSeconds"],
-            "extractedIntelligence": {
-                "phoneNumbers": session.intelligence.phoneNumbers,
-                "bankAccounts": session.intelligence.bankAccounts,
-                "upiIds": session.intelligence.upiIds,
-                "phishingLinks": session.intelligence.phishingLinks,
-                "emailAddresses": session.intelligence.emailAddresses,
-                "caseIds": session.intelligence.caseIds,
-                "policyNumbers": session.intelligence.policyNumbers,
-                "orderNumbers": session.intelligence.orderNumbers,
-            },
-            "engagementMetrics": metrics,
-            "agentNotes": notes,
-            "reply": "Sorry ji, network problem. Can you repeat that?",
-        }
+        keywords = session.accumulated_keywords or []
+        reply = "Sorry ji, network problem. Can you repeat that?"
+        return _build_response(
+            session, session.scam_detected, session.scam_type, keywords, reply
+        )
 
+    # No session — return safe defaults with all required fields
     return {
         "sessionId": session_id or "unknown",
         "status": "success",
@@ -188,14 +169,9 @@ def _build_error_response(session_id):
         "totalMessagesExchanged": 0,
         "engagementDurationSeconds": 0,
         "extractedIntelligence": {
-            "phoneNumbers": [],
-            "bankAccounts": [],
-            "upiIds": [],
-            "phishingLinks": [],
-            "emailAddresses": [],
-            "caseIds": [],
-            "policyNumbers": [],
-            "orderNumbers": [],
+            "phoneNumbers": [], "bankAccounts": [], "upiIds": [],
+            "phishingLinks": [], "emailAddresses": [],
+            "caseIds": [], "policyNumbers": [], "orderNumbers": [],
         },
         "engagementMetrics": {
             "engagementDurationSeconds": 0,
@@ -344,12 +320,13 @@ async def analyze_message(
         try:
             current_intel = extract_all_intelligence(message_text)
 
-            # Extract from ALL raw history items
+            # Extract from ALL raw history items using merge_intelligence
             for item in raw_history:
                 if isinstance(item, dict):
                     item_text = item.get("text", item.get("content", ""))
                     if item_text:
                         item_intel = extract_all_intelligence(item_text)
+                        # Use proper merge (same method session uses)
                         current_intel = ExtractedIntelligence(
                             phoneNumbers=list(set(current_intel.phoneNumbers + item_intel.phoneNumbers)),
                             bankAccounts=list(set(current_intel.bankAccounts + item_intel.bankAccounts)),
@@ -377,7 +354,7 @@ async def analyze_message(
             logger.error(f"[{session_id}] Intelligence derivation error: {e}")
 
         if keywords:
-            session.add_note(f"Keywords: {', '.join(keywords[:5])}")
+            session.add_note(f"Turn {session._turn_count}: {', '.join(keywords[:5])}")
 
         # Use accumulated keywords for rich agent notes
         all_keywords = session.accumulated_keywords if session.accumulated_keywords else keywords
@@ -412,12 +389,11 @@ async def analyze_message(
 
         # ── Callback to GUVI (every turn — always send latest data) ──────
         if session.scam_detected and session.has_intelligence():
-            # Store rich agent notes in session for callback
-            rich_notes = _build_agent_notes(
+            # Store rich notes summary for callback (replaces previous, no leak)
+            session._last_rich_notes = _build_agent_notes(
                 scam_detected, scam_type or session.scam_type,
                 all_keywords, session.intelligence
             )
-            session.add_note(rich_notes)
             send_callback_async(session)
 
         return JSONResponse(content=response)

@@ -22,6 +22,7 @@ class SessionData:
         self.agent_notes: list = []
         self.callback_sent = False
         self.accumulated_keywords: list = []  # persist keywords across ALL turns
+        self._last_rich_notes: str = ""  # latest formatted notes for callback
 
         # Timing
         self.created_at = datetime.now()
@@ -112,7 +113,10 @@ class SessionData:
         self.agent_notes.append(note)
 
     def get_notes_string(self) -> str:
-        return " | ".join(self.agent_notes) if self.agent_notes else "No specific notes"
+        """Return the best available notes — rich format preferred, raw fallback."""
+        if self._last_rich_notes:
+            return self._last_rich_notes
+        return " | ".join(self.agent_notes) if self.agent_notes else "Monitoring conversation"
 
     def merge_intelligence(self, new_intel: ExtractedIntelligence):
         """Merge new intelligence into session, deduplicating."""
