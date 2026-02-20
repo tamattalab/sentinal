@@ -1,3 +1,12 @@
+import sys
+import os
+
+# ── Ensure sibling modules are importable ──────────────────────────────
+# Leapcell runs: uvicorn src.main:app (cwd=/app, but modules are in /app/src)
+# Local runs:    uvicorn main:app --app-dir src (cwd=src, modules found)
+# This line makes both work:
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
 from fastapi import FastAPI, HTTPException, Header, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
