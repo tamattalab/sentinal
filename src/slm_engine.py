@@ -274,7 +274,6 @@ class SLMEngine:
             # Extract reply — validate it's reasonable
             reply = parsed.get("reply", "")
             if isinstance(reply, str) and 10 < len(reply) < 500:
-                # Basic safety: no offensive content, has persona feel
                 result["refined_reply"] = reply
 
             # Extract insight
@@ -284,7 +283,6 @@ class SLMEngine:
 
         except json.JSONDecodeError:
             logger.debug("[SLM] JSON parse failed — using regex fallback")
-            # Try regex fallback for reply
             reply_match = re.search(r'"reply"\s*:\s*"([^"]+)"', raw)
             if reply_match:
                 result["refined_reply"] = reply_match.group(1)
